@@ -1,0 +1,10 @@
+version: 2
+name: broken
+providers: []
+prompts:
+  - id: p
+    template: hi
+tests:
+  - name: t
+    assert:
+      - type: contains

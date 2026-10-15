@@ -1,0 +1,77 @@
+# A small but realistic assay suite. Every provider here is a deterministic
+# mock, so this suite runs without network access or API keys.
+#
+# A test with no `prompt:` key applies to every prompt in the suite, so it must
+# supply the variables all of them need. Pin a test to one prompt to opt out.
+version: 1
+name: basic-demo
+description: Demonstrates the suite format with deterministic mock providers.
+
+defaults:
+  temperature: 0
+  maxTokens: 512
+  timeoutMs: 30000
+  retries: 1
+
+providers:
+  - id: mock:echo
+  - id: mock:fixed
+    config:
+      response: Paris is the capital of France.
+  - id: mock:script
+    config:
+      responses:
+        - The text argues that caching cuts latency.
+        - Paris is the capital of France.
+
+prompts:
+  - id: summarize
+    system: You are a terse assistant. Answer in one sentence.
+    template: |
+      Summarise the following text in one sentence.
+
+      {{ text }}
+  - id: qa
+    template: 'Answer the question as briefly as possible: {{ question }}'
+
+tests:
+  # Runs against both prompts, so it supplies both variables.
+  - name: caching-note
+    vars:
+      text: Caching responses avoids repeated work, which cuts both latency and cost.
+      question: What does caching avoid?
+    assert:
+      - type: contains
+        value: caching
+      - type: max-latency
+        ms: 2000
+
+  - name: project-blurb
+    vars:
+      text: Assay runs YAML suites against several providers and diffs the results.
+      question: What does assay do?
+    assert:
+      - type: regex
+        pattern: '[Aa]ssay'
+
+  # No name: the loader assigns "test-3" from its 1-based position.
+  - vars:
+      text: Paris has been the capital of France since the tenth century.
+      question: What is the capital of France?
+    assert:
+      - type: contains
+        value: Paris
+
+  # Pinned to one prompt, so only `question` is needed.
+  - name: json-shape
+    prompt: qa
+    vars:
+      question: Return a JSON object with the keys "city" and "country".
+    assert:
+      - type: json-schema
+        schema:
+          type: object
+          required: [city, country]
+          properties:
+            city: { type: string }
+            country: { type: string }
