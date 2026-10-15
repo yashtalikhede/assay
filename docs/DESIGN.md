@@ -50,7 +50,7 @@ Non-goals:
   optional system message.
 - **Test** — a name, a set of variable values, and the assertions that must hold
   for the output. Optionally pinned to one prompt.
-- **Assertion** — one check on a result, such as `contains`, `regex` or
+- **Assertion** — one deterministic check on a result, such as `contains`, `regex` or
   `max-latency`. A typed object; the `type` key selects the check.
 - **Case** — one test, against one prompt, on one provider: the smallest unit of
   work, with a stable `caseId`.
@@ -142,41 +142,43 @@ tests:
 Structural rules, checked by the schema. Every failure is collected; the loader
 never stops at the first one.
 
-| Rule                                                                                                |
-| --------------------------------------------------------------------------------------------------- |
-| The top level must be a YAML mapping.                                                               |
-| `version` must be the number `1`.                                                                   |
-| `name` must be a non-empty string.                                                                  |
-| `description`, when present, must be a string.                                                      |
-| `providers` must be an array with at least one entry.                                               |
-| `providers[].id` must be a non-empty string matching `^[a-z][a-z0-9-]*:[^\s]+$`.                    |
-| `providers[].config`, when present, must be a mapping; its contents are free.                       |
-| `prompts` must be an array with at least one entry.                                                 |
-| `prompts[].id` must be a non-empty string matching `^[A-Za-z0-9_-]+$`.                              |
-| `prompts[].template` must be a string.                                                              |
-| `prompts[].system`, when present, must be a string.                                                 |
-| `tests` must be an array with at least one entry.                                                   |
-| `tests[].name`, when present, must be a non-empty string.                                           |
-| `tests[].prompt`, when present, must be a non-empty string.                                         |
-| `tests[].vars`, when present, must map names to strings, numbers or booleans.                       |
-| `tests[].assert` must be an array with at least one entry.                                          |
-| Every assertion must have a non-empty string `type`; other keys are free.                           |
-| `defaults.temperature` must be a number from 0 to 2.                                                |
-| `defaults.maxTokens` must be a positive integer.                                                    |
-| `defaults.timeoutMs` must be a positive integer.                                                    |
-| `defaults.retries` must be an integer from 0 to 10.                                                 |
-| Unknown keys at the top level and inside `providers`, `prompts`, `tests` and `defaults` are errors. |
+| Rule                                                                                                           |
+| -------------------------------------------------------------------------------------------------------------- |
+| The top level must be a YAML mapping.                                                                          |
+| `version` must be the number `1`.                                                                              |
+| `name` must be a non-empty string.                                                                             |
+| `description`, when present, must be a string.                                                                 |
+| `providers` must be an array with at least one entry.                                                          |
+| `providers[].id` must be a non-empty string matching `^[a-z][a-z0-9-]*:[^\s]+$`.                               |
+| `providers[].config`, when present, must be a mapping; its contents are free.                                  |
+| `prompts` must be an array with at least one entry.                                                            |
+| `prompts[].id` must be a non-empty string matching `^[A-Za-z0-9_-]+$`.                                         |
+| `prompts[].template` must be a string.                                                                         |
+| `prompts[].system`, when present, must be a string.                                                            |
+| `tests` must be an array with at least one entry.                                                              |
+| `tests[].name`, when present, must be a non-empty string.                                                      |
+| `tests[].prompt`, when present, must be a non-empty string.                                                    |
+| `tests[].vars`, when present, must map names to strings, numbers or booleans.                                  |
+| `tests[].assert` must be an array with at least one entry.                                                     |
+| Every assertion must have a non-empty string `type`; its other keys are checked against that type (section 5). |
+| `defaults.temperature` must be a number from 0 to 2.                                                           |
+| `defaults.maxTokens` must be a positive integer.                                                               |
+| `defaults.timeoutMs` must be a positive integer.                                                               |
+| `defaults.retries` must be an integer from 0 to 10.                                                            |
+| Unknown keys at the top level and inside `providers`, `prompts`, `tests` and `defaults` are errors.            |
 
 Cross-field rules, checked once the structure is sound:
 
-| Rule                                                                    |
-| ----------------------------------------------------------------------- |
-| Provider ids must be unique.                                            |
-| Prompt ids must be unique.                                              |
-| Test names must be unique, after unnamed tests are given `test-<n>`.    |
-| `tests[].prompt` must name a prompt that exists.                        |
-| Every prompt a test applies to must be fully satisfiable by its `vars`. |
-| Every prompt template must be well formed.                              |
+| Rule                                                                          |
+| ----------------------------------------------------------------------------- |
+| Provider ids must be unique.                                                  |
+| Prompt ids must be unique.                                                    |
+| Test names must be unique, after unnamed tests are given `test-<n>`.          |
+| `tests[].prompt` must name a prompt that exists.                              |
+| Every prompt a test applies to must be fully satisfiable by its `vars`.       |
+| Every prompt template must be well formed.                                    |
+| Every assertion must satisfy its own type's schema, with no unknown keys.     |
+| Every `{{ var }}` an assertion interpolates must exist in that test's `vars`. |
 
 Each problem becomes one line, path first, then message:
 
@@ -228,7 +230,216 @@ A prompt's `system` string is **not** templated in phase A1; it is passed to the
 provider verbatim. Templating it is part of the runner work in A3, and will be
 validated the same way `template` is.
 
-## 5. Architecture
+## 5. Assertions
+
+An assertion is one check on what came back. It sees only an
+`AssertionContext` — the output text, the latency, the token usage and cost
+when the provider reported them, and the test's variables — and returns an
+`AssertionResult`:
+
+```ts
+interface AssertionContext {
+  output: string;
+  latencyMs: number;
+  usage?: { inputTokens: number; outputTokens: number };
+  costUsd?: number;
+  vars: Record<string, Scalar>;
+}
+
+interface AssertionResult {
+  type: string;
+  description?: string;
+  passed: boolean;
+  message: string;
+}
+```
+
+Every assertion in phase A2 is **deterministic**: given the same context it
+always returns the same result, with no clock, no randomness and no network.
+Assertions that ask a model to judge an answer arrive in phase A5.
+
+### Universal fields
+
+Every assertion type accepts these two optional keys in addition to its own:
+
+| Field         | Type    | Default | Meaning                                               |
+| ------------- | ------- | ------- | ----------------------------------------------------- |
+| `description` | string  | —       | Shown in reports and in `assay check` output          |
+| `not`         | boolean | `false` | Inverts the outcome; the message states the inversion |
+
+With `not: true` a failure reads `expected output NOT to contain "x"` and a
+pass reads `NOT contains "x"`, so an inverted assertion is never ambiguous in a
+report.
+
+### Reference
+
+Unknown keys are errors for every type, so `valu:` is caught rather than
+silently ignored.
+
+| Type           | Fields                                                 | Passes when                                             |
+| -------------- | ------------------------------------------------------ | ------------------------------------------------------- |
+| `equals`       | `value`, `caseSensitive` (true), `trim` (false)        | the whole output equals `value`                         |
+| `contains`     | `value`, `caseSensitive` (true)                        | `value` appears anywhere in the output                  |
+| `contains-all` | `values` (≥1), `caseSensitive` (true)                  | every value appears; the message names the missing ones |
+| `contains-any` | `values` (≥1), `caseSensitive` (true)                  | at least one value appears                              |
+| `starts-with`  | `value`, `caseSensitive` (true)                        | the output begins with `value`                          |
+| `ends-with`    | `value`, `caseSensitive` (true)                        | the output ends with `value`                            |
+| `regex`        | `pattern`, `flags` (`""`)                              | the pattern matches anywhere in the output              |
+| `json-valid`   | `lenient` (false)                                      | the output parses as JSON                               |
+| `json-schema`  | `schema` (mapping), `lenient` (false)                  | the output parses as JSON and satisfies the schema      |
+| `max-latency`  | `value` (ms, ≥0)                                       | `latencyMs <= value`                                    |
+| `max-cost`     | `value` (USD, ≥0), `allowUnknown` (false)              | `costUsd <= value`                                      |
+| `max-tokens`   | `value` (integer ≥0), `allowUnknown` (false)           | `usage.outputTokens <= value`                           |
+| `length`       | `min`, `max` (integers ≥0, at least one, `min <= max`) | the output length is within the bounds                  |
+
+Notes on the less obvious ones:
+
+- **Boundaries pass.** `max-latency: 100` passes at exactly 100ms; `length`
+  with `max: 5` passes at exactly 5. The limits are inclusive.
+- **`regex` compiles a fresh `RegExp` for every evaluation**, so the `g` and
+  `y` flags cannot carry `lastIndex` state from one case into the next.
+  Allowed flags are `d`, `g`, `i`, `m`, `s`, `u`, `v` and `y`, each at most
+  once; the pattern itself must compile, and both are checked when the suite
+  is loaded rather than when the case runs.
+- **`lenient` JSON.** Models like to wrap JSON in prose and a markdown fence.
+  In lenient mode the output is trimmed, and if it contains a fenced block
+  (` ``` ` or ` ```json `) the contents of the **first** block are parsed
+  instead. Strict mode parses the output exactly as it came.
+- **`length` counts UTF-16 code units** — what `String.prototype.length`
+  returns. An emoji outside the basic multilingual plane therefore counts as 2.
+  This measures string size, not grapheme clusters, which is the right unit for
+  "is this reply too long for my UI" and the wrong one for counting visible
+  characters.
+- **`json-schema` uses Ajv** with strict mode off, because suites carry
+  hand-written schemas that need not satisfy Ajv's own style rules, and
+  `allErrors` on, so one failure can name more than the first problem. At most
+  five errors appear in a message, each as `<instancePath or />: <message>`,
+  joined with `; `.
+
+### Example
+
+```yaml
+tests:
+  - name: capital-of-france
+    vars:
+      city: Paris
+      budget_ms: 2000
+    assert:
+      # `value` is a template, rendered with this test's vars.
+      - type: contains
+        value: '{{ city }}'
+        description: names the city it was asked about
+        caseSensitive: false
+
+      - type: regex
+        pattern: '^[A-Z][^\n]*\.$'
+
+      - type: json-schema
+        lenient: true
+        schema:
+          type: object
+          required: [city, country]
+
+      # The reply must not look like an unfinished draft.
+      - type: contains-any
+        values: ['TODO', 'FIXME', 'as an AI']
+        not: true
+
+      - type: length
+        min: 10
+        max: 500
+
+      - type: max-latency
+        value: 2000
+```
+
+### Variable interpolation
+
+The comparison _values_ of the text assertions are templates, using exactly the
+same `{{ var }}` syntax and the same `render()` as prompts, resolved against the
+test's `vars` when the assertion is evaluated:
+
+- `value` in `equals`, `contains`, `starts-with` and `ends-with`
+- every item of `values` in `contains-all` and `contains-any`
+
+This is what lets one test supply both the input and the expected answer from
+the same variable, instead of repeating the answer in two places.
+
+**Not interpolated:**
+
+- **`regex.pattern`** — regular expressions legitimately contain braces. `a{2,3}`
+  is a quantifier, and treating it as a placeholder would either corrupt the
+  pattern or demand a variable named `2,3`.
+- **`json-schema.schema`** — JSON Schema is a nested structure of objects, not
+  text, and schemas commonly contain `{` and `}` in string values.
+- **Numeric fields** — `value`, `min`, `max`, `flags` and the booleans are not
+  text and have nothing to interpolate.
+
+Every `{{ var }}` in an interpolated field is checked **when the suite is
+loaded**, against that test's variables, so a typo is a validation error rather
+than a surprise mid-run. If one somehow reaches evaluation anyway — a spec built
+in code rather than loaded from a file — the assertion fails with
+`assertion error: missing template variable(s): ...` rather than throwing.
+
+### Unmeasured cost and tokens
+
+`max-cost` and `max-tokens` need figures the provider may never report. When the
+figure is missing they **fail**, with the message `cost unavailable` or
+`output tokens unavailable`.
+
+That default is deliberate. A budget guard that passes because it could not
+measure anything is worse than no guard at all: it reports green while the thing
+it was meant to prevent happens unobserved, and the failure is silent exactly
+when a provider stops reporting usage — the moment you most want to know. Opting
+out is explicit:
+
+```yaml
+- type: max-cost
+  value: 0.01
+  allowUnknown: true # passes with "cost unavailable (allowed)"
+```
+
+`not` does not invert this outcome. Inverting "I could not measure it" into a
+pass would recreate the silent-green failure by a second route, so the
+unavailable result stands whatever `not` says. `not` inverts comparisons, not
+missing data.
+
+### Evaluation guarantees
+
+- **Evaluation never throws.** Anything unexpected — a regex that does not
+  compile, a schema Ajv rejects, a missing variable, a spec that never went
+  through the loader — becomes a failed result whose message begins
+  `assertion error:`. One broken assertion cannot take down a run.
+- **Every assertion is evaluated.** `evaluateAll` does not short-circuit on the
+  first failure, and preserves order, so one run tells you everything that is
+  wrong rather than the first thing.
+- **Specs are validated before use.** `evaluateAssertion` normalizes the spec
+  itself, so defaults apply and a malformed spec fails cleanly even when it
+  bypassed the suite loader.
+- **Results are deterministic.** No clock, no randomness, no network, and no
+  state carried between evaluations.
+
+### What assertions deliberately do not do
+
+- **No user-supplied JavaScript.** There is no `javascript:` or `eval:`
+  assertion type, now or planned. Executing arbitrary code out of a suite file
+  would mean that checking out a branch and running `assay` is enough to run
+  someone else's code — suites are data in a repository, reviewed as data, and
+  that is only safe if they stay data.
+- **No model-based judgement yet.** LLM-as-judge and embedding similarity
+  assertions are phase A5. They are neither deterministic nor free, so they
+  belong behind their own flag and their own cost accounting rather than mixed
+  in with checks that always give the same answer.
+- **No regex sandbox (ReDoS).** A pathological pattern on a long output can take
+  a very long time: `(a+)+$` against a few thousand characters is the classic
+  example. `assay` runs patterns on the normal JavaScript engine with no timeout
+  and no complexity analysis, so a suite can hang itself. Keep patterns simple
+  and avoid nested quantifiers; a per-assertion timeout is future work, and it
+  belongs with the runner's own timeout machinery in phase A3. This is a
+  footgun, not a security boundary — the pattern and the output both come from
+  people who could already run the suite.
+
+## 6. Architecture
 
 The pipeline is a chain of small, independently testable stages:
 
@@ -273,12 +484,15 @@ What exists today (phase A1):
 - **provider interface and registry** — `src/core/types.ts`,
   `src/providers/registry.ts`.
 - **mock providers** — `src/providers/mock.ts`.
-- **CLI** — `assay validate` and `assay plan`.
+- **assertion engine** — `src/assertions/`: the deterministic types, their
+  strict per-type schemas, variable interpolation and the evaluation
+  guarantees described in section 5.
+- **CLI** — `assay validate`, `assay plan` and `assay check`.
 
-What comes later: the runner and `assay run` (A3), the assertion engine (A2),
-real providers (A4), reporters and `assay diff` (A6). See the roadmap.
+What comes later: the runner and `assay run` (A3), real providers (A4),
+model-based assertions (A5), reporters and `assay diff` (A6). See the roadmap.
 
-## 6. The provider interface contract
+## 7. The provider interface contract
 
 ```ts
 interface Provider {
@@ -330,7 +544,7 @@ from `inputCostPer1k` and `outputCostPer1k` when both are configured. Nothing in
 the mocks calls `Math.random` or `Date.now`; `performance.now()` appears only to
 measure latency.
 
-## 7. Design decisions
+## 8. Design decisions
 
 **A strict schema that catches typos.** Unknown keys are errors, not ignored
 input. The failure mode of a permissive schema is the worst one available: a
@@ -377,14 +591,20 @@ subprocesses and no global state, and `src/cli.ts` is three lines.
 **Zero runtime dependencies beyond parsing and validation.** Only `yaml` and
 `zod`. A test harness that is slow or awkward to install does not get used.
 
-## 8. Roadmap
+## 9. Roadmap
 
-| Phase  | Scope                                                                                                                                                     | Status   |
-| ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
-| **A1** | Foundation: project scaffold, suite format with strict validation, template engine, provider interface, mock providers, planner, `assay validate`, CI     | **done** |
-| **A2** | Deterministic assertions: `equals`, `contains`, `icontains`, `regex`, `starts-with`, `json-valid`, `json-schema`, `max-latency`, `max-cost`, `max-tokens` | planned  |
-| **A3** | Runner: concurrency, timeouts, retries with backoff, on-disk cache keyed by a hash of provider + prompt + params, cancellation; `assay run`               | planned  |
-| **A4** | Real providers over `fetch`: Anthropic, OpenAI, Google Gemini, Ollama, with a price table; tested with an injected `fetch`                                | planned  |
-| **A5** | LLM-as-judge and similarity assertions                                                                                                                    | planned  |
-| **A6** | Reporters (console table, JSON, single-file HTML) and `assay diff` with regression exit codes                                                             | planned  |
-| **A7** | GitHub Action, more examples, README polish, v0.1.0 release                                                                                               | planned  |
+| Phase  | Scope                                                                                                                                                                                                                                                                                                                                                | Status   |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| **A1** | Foundation: project scaffold, suite format with strict validation, template engine, provider interface, mock providers, planner, `assay validate`, CI                                                                                                                                                                                                | **done** |
+| **A2** | Deterministic assertions (`equals`, `contains`, `contains-all`, `contains-any`, `starts-with`, `ends-with`, `regex`, `json-valid`, `json-schema`, `max-latency`, `max-cost`, `max-tokens`, `length`), the universal `description` and `not` fields, variable interpolation in assertion values, per-type validation in the loader, and `assay check` | **done** |
+| **A3** | Runner: concurrency, timeouts, retries with backoff, on-disk cache keyed by a hash of provider + prompt + params, cancellation; `assay run`                                                                                                                                                                                                          | planned  |
+| **A4** | Real providers over `fetch`: Anthropic, OpenAI, Google Gemini, Ollama, with a price table; tested with an injected `fetch`                                                                                                                                                                                                                           | planned  |
+| **A5** | LLM-as-judge and similarity assertions                                                                                                                                                                                                                                                                                                               | planned  |
+| **A6** | Reporters (console table, JSON, single-file HTML) and `assay diff` with regression exit codes                                                                                                                                                                                                                                                        | planned  |
+| **A7** | GitHub Action, more examples, README polish, v0.1.0 release                                                                                                                                                                                                                                                                                          | planned  |
+
+The `icontains` type planned for A2 was not built: `contains` with
+`caseSensitive: false` does the same job without a second type to remember.
+`contains-all`, `contains-any`, `ends-with` and `length` were added, because a
+suite that cannot say "mentions all of these" or "is not longer than this" ends
+up with a regex doing both jobs badly.
