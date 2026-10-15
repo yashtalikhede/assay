@@ -1,5 +1,14 @@
 /** Public entry point: everything a consumer of assay needs. */
 
+export {
+  assertionTemplates,
+  assertionTypes,
+  evaluateAll,
+  evaluateAssertion,
+  normalizeAssertion,
+  summarizeResults,
+} from './assertions/index.js';
+export type { AssertionContext, AssertionResult } from './assertions/types.js';
 export type { CliIo } from './cli-run.js';
 export { run } from './cli-run.js';
 export {
