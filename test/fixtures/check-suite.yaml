@@ -1,0 +1,28 @@
+version: 1
+name: check-fixture
+providers:
+  - id: mock:echo
+prompts:
+  - id: p
+    template: 'Where is {{ city }}?'
+tests:
+  - name: interpolated
+    vars:
+      city: Paris
+    assert:
+      - type: contains
+        value: '{{ city }}'
+        description: names the city
+      - type: contains
+        value: Berlin
+        not: true
+  - name: budgets
+    vars:
+      city: Paris
+    assert:
+      - type: max-latency
+        value: 100
+      - type: max-cost
+        value: 0.01
+      - type: max-tokens
+        value: 50

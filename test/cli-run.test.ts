@@ -110,3 +110,168 @@ describe('assay usage', () => {
     expect(io.err.join('')).toMatch(/^error: /);
   });
 });
+
+describe('assay check', () => {
+  const SUITE = 'test/fixtures/check-suite.yaml';
+
+  it('prints a line per assertion and returns 0 when all pass', async () => {
+    const io = makeIo();
+    const code = await run(
+      ['check', SUITE, '--test', 'interpolated', '--output', 'Paris is lovely'],
+      io,
+    );
+    expect(code).toBe(0);
+    expect(io.out.join('')).toBe(
+      'PASS (names the city) contains "Paris"\nPASS NOT contains "Berlin"\n2/2 assertions passed\n',
+    );
+    expect(io.err).toEqual([]);
+  });
+
+  it('returns 1 and names the failures on a mixed run', async () => {
+    const io = makeIo();
+    const code = await run(
+      ['check', SUITE, '--test', 'interpolated', '--output', 'Berlin is lovely'],
+      io,
+    );
+    expect(code).toBe(1);
+    expect(io.out.join('')).toBe(
+      'FAIL (names the city) expected output to contain "Paris", found "Berlin is lovely"\n' +
+        'FAIL expected output NOT to contain "Berlin"\n' +
+        '0/2 assertions passed\n',
+    );
+  });
+
+  it('defaults latency to 0 and leaves cost and tokens unmeasured', async () => {
+    const io = makeIo();
+    const code = await run(['check', SUITE, '--test', 'budgets', '--output', 'x'], io);
+    expect(code).toBe(1);
+    expect(io.out.join('')).toBe(
+      'PASS latency 0ms <= 100ms\nFAIL cost unavailable\nFAIL output tokens unavailable\n' +
+        '1/3 assertions passed\n',
+    );
+  });
+
+  it('passes the measurements from the flags to the assertions', async () => {
+    const io = makeIo();
+    const code = await run(
+      [
+        'check',
+        SUITE,
+        '--test',
+        'budgets',
+        '--output',
+        'x',
+        '--latency',
+        '42',
+        '--cost',
+        '0.002',
+        '--tokens',
+        '7',
+      ],
+      io,
+    );
+    expect(code).toBe(0);
+    expect(io.out.join('')).toBe(
+      'PASS latency 42ms <= 100ms\nPASS cost $0.002 <= $0.01\nPASS output tokens 7 <= 50\n' +
+        '3/3 assertions passed\n',
+    );
+  });
+
+  it('reads the output from a file', async () => {
+    const io = makeIo();
+    const code = await run(
+      ['check', SUITE, '--test', 'interpolated', '--output-file', 'test/fixtures/output.txt'],
+      io,
+    );
+    expect(code).toBe(0);
+    expect(io.out.join('')).toMatch(/^PASS \(names the city\) contains "Paris"\n/);
+  });
+
+  it('returns 1 when the output file does not exist', async () => {
+    const io = makeIo();
+    const code = await run(
+      ['check', SUITE, '--test', 'interpolated', '--output-file', 'test/fixtures/nope.txt'],
+      io,
+    );
+    expect(code).toBe(1);
+    expect(io.err.join('')).toMatch(/^error: cannot read output file .*nope\.txt/);
+  });
+
+  it('returns 1 and lists the test names when the test is unknown', async () => {
+    const io = makeIo();
+    const code = await run(['check', SUITE, '--test', 'nope', '--output', 'x'], io);
+    expect(code).toBe(1);
+    expect(io.err.join('')).toBe(
+      'error: no test named "nope" in suite "check-fixture"; tests are: interpolated, budgets\n',
+    );
+  });
+
+  it('returns 2 when both output flags are given', async () => {
+    const io = makeIo();
+    const code = await run(
+      ['check', SUITE, '--test', 'interpolated', '--output', 'x', '--output-file', 'y'],
+      io,
+    );
+    expect(code).toBe(2);
+    expect(io.err.join('')).toMatch(
+      /^error: "check" needs exactly one of --output or --output-file/,
+    );
+  });
+
+  it('returns 2 when neither output flag is given', async () => {
+    const io = makeIo();
+    const code = await run(['check', SUITE, '--test', 'interpolated'], io);
+    expect(code).toBe(2);
+    expect(io.err.join('')).toMatch(
+      /^error: "check" needs exactly one of --output or --output-file/,
+    );
+  });
+
+  it('returns 2 when --test is missing', async () => {
+    const io = makeIo();
+    const code = await run(['check', SUITE, '--output', 'x'], io);
+    expect(code).toBe(2);
+    expect(io.err.join('')).toMatch(/^error: "check" needs --test <name>/);
+  });
+
+  it('returns 2 when the file argument is missing', async () => {
+    const io = makeIo();
+    expect(await run(['check'], io)).toBe(2);
+    expect(io.err.join('')).toMatch(/^error: "check" needs a suite file argument/);
+  });
+
+  const badNumbers: [string, string, string][] = [
+    ['--latency', 'abc', '--latency must be a non-negative number, got "abc"'],
+    ['--latency=-1', '', '--latency must be a non-negative number, got "-1"'],
+    ['--cost', 'free', '--cost must be a non-negative number, got "free"'],
+    ['--tokens', '1.5', '--tokens must be an integer, got "1.5"'],
+    ['--tokens=', '', '--tokens must be a non-negative number, got ""'],
+  ];
+
+  it.each(badNumbers)('returns 2 for %s %s', async (flag, value, reason) => {
+    const io = makeIo();
+    // An empty value means the flag already carries its argument as --flag=value,
+    // which is how a negative number has to be passed to parseArgs.
+    const args = value === '' ? [flag] : [flag, value];
+    const code = await run(['check', SUITE, '--test', 'budgets', '--output', 'x', ...args], io);
+    expect(code).toBe(2);
+    expect(io.err.join('')).toContain(`error: ${reason}`);
+  });
+
+  it('reports suite errors the same way as validate', async () => {
+    const io = makeIo();
+    const code = await run(
+      ['check', 'test/fixtures/invalid.yaml', '--test', 't', '--output', 'x'],
+      io,
+    );
+    expect(code).toBe(1);
+    expect(io.err.join('')).toMatch(/invalid\.yaml: 2 validation errors\n/);
+  });
+
+  it('is listed in the help text', async () => {
+    const io = makeIo();
+    expect(await run(['--help'], io)).toBe(0);
+    expect(io.out.join('')).toMatch(/assay check <file>/);
+    expect(io.out.join('')).toMatch(/--output-file/);
+  });
+});
