@@ -40,11 +40,16 @@ tests:
     vars:
       text: Caching responses avoids repeated work, which cuts both latency and cost.
       question: What does caching avoid?
+      subject: caching
     assert:
+      # `value` is a template, rendered with this test's vars.
       - type: contains
-        value: caching
+        value: '{{ subject }}'
+        description: mentions the subject it was asked about
       - type: max-latency
-        ms: 2000
+        value: 2000
+      - type: length
+        min: 1
 
   - name: project-blurb
     vars:
@@ -53,6 +58,10 @@ tests:
     assert:
       - type: regex
         pattern: '[Aa]ssay'
+      # `not` inverts the check: the output must not look like a placeholder.
+      - type: contains
+        value: TODO
+        not: true
 
   # No name: the loader assigns "test-3" from its 1-based position.
   - vars:
@@ -69,9 +78,12 @@ tests:
       question: Return a JSON object with the keys "city" and "country".
     assert:
       - type: json-schema
+        lenient: true
         schema:
           type: object
           required: [city, country]
           properties:
             city: { type: string }
             country: { type: string }
+      - type: length
+        max: 2000

@@ -17,11 +17,11 @@ prompts:
 tests:
   - name: both
     vars: { v: 1 }
-    assert: [{ type: contains }]
+    assert: [{ type: contains, value: x }]
   - name: pinned
     prompt: beta
     vars: { v: 2 }
-    assert: [{ type: contains }]
+    assert: [{ type: contains, value: x }]
 `;
 
 describe('plan', () => {

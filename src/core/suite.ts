@@ -6,6 +6,7 @@
 import { readFile } from 'node:fs/promises';
 import { parseDocument } from 'yaml';
 import { z } from 'zod';
+import { assertionTemplates, assertionTypes, normalizeAssertion } from '../assertions/index.js';
 import { AssayError, SuiteError, TemplateError } from './errors.js';
 import { variablesOf } from './template.js';
 import type {
@@ -246,6 +247,53 @@ function crossFieldIssues(suite: Suite): string[] {
   return issues;
 }
 
+/**
+ * Validate every assertion against its own type's schema, returning a suite
+ * whose assertions are normalized with their defaults filled in. Each problem
+ * becomes an issue line; an assertion that fails validation is left as it was,
+ * because there is nothing dependable to normalize it into.
+ */
+function normalizeAssertions(suite: Suite): { suite: Suite; issues: string[] } {
+  const issues: string[] = [];
+  const known = assertionTypes();
+
+  const tests = suite.tests.map((test, index) => {
+    const assertions = test.assert.map((spec, position) => {
+      const where = `tests[${index}].assert[${position}]`;
+      if (!known.includes(spec.type)) {
+        issues.push(`${where}: unknown assertion type "${spec.type}" (known: ${known.join(', ')})`);
+        return spec;
+      }
+
+      const normalized = normalizeAssertion(spec);
+      if (!normalized.ok) {
+        issues.push(`${where} (${spec.type}): ${normalized.issue}`);
+        return spec;
+      }
+
+      for (const template of assertionTemplates(normalized.spec)) {
+        try {
+          for (const variable of variablesOf(template)) {
+            if (!Object.hasOwn(test.vars, variable)) {
+              issues.push(
+                `tests[${index}] "${test.name}" assert[${position}]: missing variable "${variable}"`,
+              );
+            }
+          }
+        } catch (error) {
+          if (!(error instanceof TemplateError)) throw error;
+          issues.push(`tests[${index}] "${test.name}" assert[${position}]: ${error.message}`);
+        }
+      }
+      return normalized.spec;
+    });
+
+    return { ...test, assert: assertions };
+  });
+
+  return { suite: { ...suite, tests }, issues };
+}
+
 /** Parse YAML into a plain value, reporting every syntax error found. */
 function parseYaml(yamlText: string, sourceName: string): unknown {
   const doc = parseDocument(yamlText, { prettyErrors: true });
@@ -279,8 +327,8 @@ export function parseSuite(yamlText: string, sourceName = '<input>'): Suite {
     throw new SuiteError(formatHeader(sourceName, issues.length), issues);
   }
 
-  const suite = buildSuite(parsed.data);
-  const issues = crossFieldIssues(suite);
+  const { suite, issues: assertionIssues } = normalizeAssertions(buildSuite(parsed.data));
+  const issues = [...crossFieldIssues(suite), ...assertionIssues];
   if (issues.length > 0) {
     throw new SuiteError(formatHeader(sourceName, issues.length), issues);
   }

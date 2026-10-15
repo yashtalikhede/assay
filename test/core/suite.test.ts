@@ -46,7 +46,7 @@ tests:
       - type: regex
         pattern: '\\d+'
       - type: max-latency
-        ms: 10
+        value: 10
 `;
 
 describe('parseSuite (valid input)', () => {
@@ -61,15 +61,15 @@ describe('parseSuite (valid input)', () => {
         {
           name: 'test-1',
           vars: { who: 'world' },
-          assert: [{ type: 'contains', value: 'Hello' }],
+          assert: [{ type: 'contains', value: 'Hello', caseSensitive: true, not: false }],
         },
         {
           name: 'explicit',
           prompt: 'greet',
           vars: { who: 42 },
           assert: [
-            { type: 'regex', pattern: '\\d+' },
-            { type: 'max-latency', ms: 10 },
+            { type: 'regex', pattern: '\\d+', flags: '', not: false },
+            { type: 'max-latency', value: 10, not: false },
           ],
         },
       ],
@@ -83,7 +83,7 @@ describe('parseSuite (valid input)', () => {
 name: s
 providers: [{ id: 'mock:echo' }]
 prompts: [{ id: p, template: static }]
-tests: [{ assert: [{ type: contains }] }]
+tests: [{ assert: [{ type: contains, value: x }] }]
 `);
     expect(suite.tests[0]?.vars).toEqual({});
   });
@@ -111,6 +111,7 @@ tests:
       name: x
     assert:
       - type: contains
+        value: x
 `);
 
   it('rejects a version other than 1', () => {
@@ -150,15 +151,19 @@ tests:
 
   it('rejects an empty assert array', () => {
     const issues = issuesOf(
-      base((t) => t.replace('    assert:\n      - type: contains\n', '    assert: []\n')),
+      base((t) =>
+        t.replace('    assert:\n      - type: contains\n        value: x\n', '    assert: []\n'),
+      ),
     );
     expect(issues).toEqual(['tests[0].assert: must contain at least one assertion']);
   });
 
   it('rejects an assertion without a type', () => {
-    expect(issuesOf(base((t) => t.replace('      - type: contains', '      - value: x')))).toEqual([
-      'tests[0].assert[0].type: "type" must be a non-empty string',
-    ]);
+    expect(
+      issuesOf(
+        base((t) => t.replace('      - type: contains\n        value: x', '      - value: x')),
+      ),
+    ).toEqual(['tests[0].assert[0].type: "type" must be a non-empty string']);
   });
 
   it('rejects vars that are not a mapping', () => {
@@ -231,7 +236,7 @@ providers:
   - id: mock:echo
   - id: mock:echo
 prompts: [{ id: p, template: hi }]
-tests: [{ name: t, assert: [{ type: contains }] }]
+tests: [{ name: t, assert: [{ type: contains, value: x }] }]
 `),
     ).toEqual(['providers[1]: duplicate provider id "mock:echo"']);
   });
@@ -246,7 +251,7 @@ prompts:
     template: hi
   - id: p
     template: yo
-tests: [{ name: t, assert: [{ type: contains }] }]
+tests: [{ name: t, assert: [{ type: contains, value: x }] }]
 `),
     ).toEqual(['prompts[1]: duplicate prompt id "p"']);
   });
@@ -259,9 +264,9 @@ providers: [{ id: 'mock:echo' }]
 prompts: [{ id: p, template: hi }]
 tests:
   - name: t
-    assert: [{ type: contains }]
+    assert: [{ type: contains, value: x }]
   - name: t
-    assert: [{ type: contains }]
+    assert: [{ type: contains, value: x }]
 `),
     ).toEqual(['tests[1]: duplicate test name "t"']);
   });
@@ -273,9 +278,9 @@ name: s
 providers: [{ id: 'mock:echo' }]
 prompts: [{ id: p, template: hi }]
 tests:
-  - assert: [{ type: contains }]
+  - assert: [{ type: contains, value: x }]
   - name: test-1
-    assert: [{ type: contains }]
+    assert: [{ type: contains, value: x }]
 `),
     ).toEqual(['tests[1]: duplicate test name "test-1"']);
   });
@@ -289,7 +294,7 @@ prompts: [{ id: p, template: hi }]
 tests:
   - name: t
     prompt: nope
-    assert: [{ type: contains }]
+    assert: [{ type: contains, value: x }]
 `),
     ).toEqual(['tests[0] "t": no prompt with id "nope"']);
   });
@@ -303,7 +308,7 @@ prompts: [{ id: p, template: 'hi {{ name }}' }]
 tests:
   - name: t
     prompt: p
-    assert: [{ type: contains }]
+    assert: [{ type: contains, value: x }]
 `),
     ).toEqual(['tests[0] "t" prompt "p": missing variable "name"']);
   });
@@ -321,7 +326,7 @@ prompts:
 tests:
   - name: t
     vars: { one: 1 }
-    assert: [{ type: contains }]
+    assert: [{ type: contains, value: x }]
 `),
     ).toEqual(['tests[0] "t" prompt "b": missing variable "two"']);
   });
@@ -331,7 +336,7 @@ tests:
 name: s
 providers: [{ id: 'mock:echo' }]
 prompts: [{ id: p, template: 'hi {{ name' }]
-tests: [{ name: t, assert: [{ type: contains }] }]
+tests: [{ name: t, assert: [{ type: contains, value: x }] }]
 `);
     expect(issues).toHaveLength(1);
     expect(issues[0]).toMatch(/^prompts\[0\] "p": unclosed "\{\{"/);
@@ -360,5 +365,169 @@ describe('loadSuite', () => {
     const path = join(process.cwd(), 'test', 'fixtures', 'does-not-exist.yaml');
     await expect(loadSuite(path)).rejects.toThrow(AssayError);
     await expect(loadSuite(path)).rejects.toThrow(/does-not-exist\.yaml/);
+  });
+});
+
+describe('parseSuite (assertion validation)', () => {
+  /** A suite with one test whose single assertion is the given YAML block. */
+  const withAssertion = (block: string, vars = '      name: x\n') => `version: 1
+name: s
+providers:
+  - id: mock:echo
+prompts:
+  - id: p
+    template: 'hi {{ name }}'
+tests:
+  - name: t
+    vars:
+${vars}    assert:
+${block}`;
+
+  it('normalizes assertions in the loaded suite, filling in defaults', () => {
+    const suite = parseSuite(withAssertion('      - type: contains\n        value: hi\n'));
+    expect(suite.tests[0]?.assert).toEqual([
+      { type: 'contains', value: 'hi', caseSensitive: true, not: false },
+    ]);
+  });
+
+  it('names the known types for an unknown assertion type', () => {
+    expect(issuesOf(withAssertion('      - type: foo\n'))).toEqual([
+      'tests[0].assert[0]: unknown assertion type "foo" (known: contains, contains-all, ' +
+        'contains-any, ends-with, equals, json-schema, json-valid, length, max-cost, ' +
+        'max-latency, max-tokens, regex, starts-with)',
+    ]);
+  });
+
+  it('reports an unknown key inside an assertion with its type', () => {
+    expect(
+      issuesOf(withAssertion('      - type: contains\n        value: hi\n        valu: hi\n')),
+    ).toEqual(['tests[0].assert[0] (contains): Unrecognized key: "valu"']);
+  });
+
+  it('reports a field of the wrong type with its type', () => {
+    expect(issuesOf(withAssertion('      - type: contains\n        value: 3\n'))).toEqual([
+      'tests[0].assert[0] (contains): value: "value" must be a string',
+    ]);
+  });
+
+  it('reports a regex that does not compile, quoting the engine', () => {
+    const issues = issuesOf(withAssertion("      - type: regex\n        pattern: 'a('\n"));
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatch(/^tests\[0\]\.assert\[0\] \(regex\): pattern: /);
+    expect(issues[0]).toContain('Invalid regular expression');
+  });
+
+  it('reports invalid regex flags', () => {
+    expect(
+      issuesOf(withAssertion("      - type: regex\n        pattern: a\n        flags: 'qq'\n")),
+    ).toEqual([
+      'tests[0].assert[0] (regex): flags: "flags" must be a subset of "dgimsuvy" with no duplicates',
+    ]);
+  });
+
+  it('reports a JSON schema Ajv cannot compile', () => {
+    const issues = issuesOf(
+      withAssertion('      - type: json-schema\n        schema:\n          type: nonsense\n'),
+    );
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatch(/^tests\[0\]\.assert\[0\] \(json-schema\): schema: /);
+    expect(issues[0]).toContain('schema is invalid');
+  });
+
+  it('reports a length assertion with no bounds', () => {
+    expect(issuesOf(withAssertion('      - type: length\n'))).toEqual([
+      'tests[0].assert[0] (length): set "min", "max" or both',
+    ]);
+  });
+
+  it('reports a length assertion whose min exceeds its max', () => {
+    expect(
+      issuesOf(withAssertion('      - type: length\n        min: 10\n        max: 2\n')),
+    ).toEqual(['tests[0].assert[0] (length): min: "min" must not be greater than "max"']);
+  });
+
+  it('reports a variable an assertion needs but the test does not supply', () => {
+    expect(
+      issuesOf(withAssertion("      - type: contains\n        value: '{{ city }}'\n")),
+    ).toEqual(['tests[0] "t" assert[0]: missing variable "city"']);
+  });
+
+  it('reports every missing variable of every value', () => {
+    expect(
+      issuesOf(
+        withAssertion("      - type: contains-all\n        values: ['{{ a }}', '{{ b }}']\n"),
+      ),
+    ).toEqual([
+      'tests[0] "t" assert[0]: missing variable "a"',
+      'tests[0] "t" assert[0]: missing variable "b"',
+    ]);
+  });
+
+  it('accepts a variable an assertion needs when the test supplies it', () => {
+    const suite = parseSuite(
+      withAssertion("      - type: contains\n        value: '{{ name }}'\n"),
+    );
+    expect(suite.tests[0]?.assert[0]?.value).toBe('{{ name }}');
+  });
+
+  it('reports a malformed template inside an assertion value', () => {
+    const issues = issuesOf(withAssertion("      - type: equals\n        value: 'hi {{ name'\n"));
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatch(/^tests\[0\] "t" assert\[0\]: unclosed "\{\{"/);
+  });
+
+  it('does not require variables for a regex pattern or a schema', () => {
+    const suite = parseSuite(
+      withAssertion(
+        "      - type: regex\n        pattern: '{{ nope }}'\n" +
+          '      - type: json-schema\n        schema:\n          const: "{{ nope }}"\n',
+      ),
+    );
+    expect(suite.tests[0]?.assert).toHaveLength(2);
+  });
+
+  it('reports assertion problems across several tests at once', () => {
+    const issues = issuesOf(`version: 1
+name: s
+providers:
+  - id: mock:echo
+prompts:
+  - id: p
+    template: hi
+tests:
+  - name: one
+    assert:
+      - type: foo
+      - type: contains
+        value: '{{ city }}'
+  - name: two
+    assert:
+      - type: length
+      - type: max-latency
+        value: -5
+`);
+    expect(issues).toEqual([
+      'tests[0].assert[0]: unknown assertion type "foo" (known: contains, contains-all, ' +
+        'contains-any, ends-with, equals, json-schema, json-valid, length, max-cost, ' +
+        'max-latency, max-tokens, regex, starts-with)',
+      'tests[0] "one" assert[1]: missing variable "city"',
+      'tests[1].assert[0] (length): set "min", "max" or both',
+      'tests[1].assert[1] (max-latency): value: "value" must not be negative',
+    ]);
+  });
+
+  it('reports structural problems before per-type ones', () => {
+    // `tests` is not an array, so no assertion is reached at all.
+    expect(
+      issuesOf(`version: 1
+name: s
+providers:
+  - id: mock:echo
+prompts:
+  - id: p
+    template: hi
+tests: nope
+`),
+    ).toEqual(['tests: must be an array of tests']);
   });
 });
