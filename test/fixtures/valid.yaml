@@ -1,0 +1,14 @@
+version: 1
+name: fixture-suite
+providers:
+  - id: mock:echo
+prompts:
+  - id: p
+    template: 'hi {{ name }}'
+tests:
+  - name: t
+    vars:
+      name: world
+    assert:
+      - type: contains
+        value: hi
